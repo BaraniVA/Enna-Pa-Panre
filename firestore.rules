@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function isValidEmail() {
+      return request.auth.token.email.matches('.*@(gmail\\.com)$');
+    }
+    
+    function isValidPostData() {
+      let data = request.resource.data;
+      return data.keys().hasAll(['authorId', 'mood', 'text', 'timestamp', 'reactions', 'isChallenge', 'expiresAt']) &&
+             data.authorId == request.auth.uid &&
+             data.mood is string &&
+             data.text is string &&
+             data.text.size() <= 100 &&
+             data.timestamp is timestamp &&
+             data.reactions is map &&
+             data.isChallenge is bool &&
+             data.expiresAt is timestamp;
+    }
+    
+    function isValidUserData() {
+      let data = request.resource.data;
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'createdAt', 'lastActive', 'totalPosts', 'isActive']) &&
+             data.uid == request.auth.uid &&
+             data.email == request.auth.token.email &&
+             data.displayName is string &&
+             data.createdAt is timestamp &&
+             data.lastActive is timestamp &&
+             data.totalPosts is number &&
+             data.isActive is bool;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read, write: if isAuthenticated() && isValidEmail() && isOwner(userId);
+      allow create: if isAuthenticated() && isValidEmail() && isOwner(userId) && isValidUserData();
+      allow update: if isAuthenticated() && isValidEmail() && isOwner(userId) && 
+                       request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['lastActive', 'totalPosts', 'isActive', 'dailyPostCount', 'lastPostDate', 'displayName']);
+    }
+
+    // Posts collection
+    match /posts/{postId} {
+      allow read: if isAuthenticated() && isValidEmail();
+      allow create: if isAuthenticated() && isValidEmail() && isValidPostData();
+      allow update: if isAuthenticated() && isValidEmail() && 
+                       request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['reactions']);
+      allow delete: if false; // Posts are auto-deleted by Cloud Functions
+    }
+
+    // Daily stats collection (read-only for clients)
+    match /dailyStats/{date} {
+      allow read: if isAuthenticated() && isValidEmail();
+      allow write: if false; // Only server can write stats
+    }
+
+    // Usage tracking (read-only for clients)
+    match /usage/{date} {
+      allow read: if isAuthenticated() && isValidEmail();
+      allow write: if isAuthenticated() && isValidEmail() && 
+                      request.resource.data.keys().hasAll(['dailyReads', 'dailyWrites', 'lastReset']) &&
+                      request.resource.data.dailyReads is number &&
+                      request.resource.data.dailyWrites is number &&
+                      request.resource.data.lastReset is string;
+    }
+
+    // Deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
